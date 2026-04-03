@@ -228,7 +228,16 @@ pip install onnxruntime-silicon==1.13.1
 python3.10 run.py --execution-provider coreml
 ```
 
+**`mps` (Apple Silicon, alias for CoreML)**
+
+PyTorch exposes an Apple GPU device as `mps`, but ONNX Runtime does not. In this project, `--execution-provider mps` is an **alias** for CoreML-backed ONNX inference (same as `coreml`): models still run through `CoreMLExecutionProvider`, not raw PyTorch MPS. The option is available on Apple Silicon without installing PyTorch; install PyTorch with MPS only if you want `torch.mps.empty_cache()` during runs.
+
+```bash
+python3.10 run.py --execution-provider mps
+```
+
 **Important Notes for macOS:**
+- **Continuity Camera / AVFoundation warning:** macOS may log that `AVCaptureDeviceTypeExternal` is deprecated when opening the webcam via OpenCV. That comes from Apple’s framework until OpenCV adopts the newer API; it is harmless. On import, `modules` installs a **stderr file-descriptor filter** (NSLog bypasses Python’s `sys.stderr`) and sets `OS_ACTIVITY_MODE=disable` unless you set `DLC_KEEP_ACTIVITY_LOG=1`. If you build a **.app** bundle (PyInstaller, py2app, etc.), merge `NSCameraUseContinuityCameraDeviceType` and camera usage keys from [packaging/macos/Info.plist.example](packaging/macos/Info.plist.example) into your `Contents/Info.plist`.
 - You **must** use Python 3.10, not newer versions like 3.11 or 3.13
 - Always run with `python3.10` command not just `python` if you have multiple Python versions installed
 - If you get error about `_tkinter` missing, reinstall the tkinter package: `brew reinstall python-tk@3.10`

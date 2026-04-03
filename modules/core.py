@@ -32,7 +32,6 @@ warnings.filterwarnings('ignore', category=FutureWarning, module='insightface')
 if HAS_TORCH:
     warnings.filterwarnings('ignore', category=UserWarning, module='torchvision')
 
-
 def parse_args() -> None:
     signal.signal(signal.SIGINT, lambda signal_number, frame: destroy())
     program = argparse.ArgumentParser()
@@ -82,7 +81,9 @@ def parse_args() -> None:
     modules.globals.live_mirror = args.live_mirror
     modules.globals.live_resizable = args.live_resizable
     modules.globals.max_memory = args.max_memory
-    modules.globals.execution_providers = decode_execution_providers(args.execution_provider)
+    modules.globals.execution_providers = decode_execution_providers(
+        normalize_execution_provider_args(args.execution_provider)
+    )
     modules.globals.execution_threads = args.execution_threads
     modules.globals.lang = args.lang
 
@@ -116,6 +117,18 @@ def encode_execution_providers(execution_providers: List[str]) -> List[str]:
     return [execution_provider.replace('ExecutionProvider', '').lower() for execution_provider in execution_providers]
 
 
+def normalize_execution_provider_args(execution_providers: List[str]) -> List[str]:
+    """Map virtual provider ``mps`` to ``coreml`` (ONNX Runtime has no MPS backend)."""
+    mapped = ['coreml' if p == 'mps' else p for p in execution_providers]
+    out: List[str] = []
+    seen = set()
+    for p in mapped:
+        if p not in seen:
+            seen.add(p)
+            out.append(p)
+    return out
+
+
 def decode_execution_providers(execution_providers: List[str]) -> List[str]:
     return [provider for provider, encoded_execution_provider in zip(onnxruntime.get_available_providers(), encode_execution_providers(onnxruntime.get_available_providers()))
             if any(execution_provider in encoded_execution_provider for execution_provider in execution_providers)]
@@ -127,8 +140,19 @@ def suggest_max_memory() -> int:
     return 16
 
 
+def _torch_mps_available() -> bool:
+    if not HAS_TORCH:
+        return False
+    mps = getattr(torch.backends, 'mps', None)
+    return bool(mps is not None and mps.is_available())
+
+
 def suggest_execution_providers() -> List[str]:
-    return encode_execution_providers(onnxruntime.get_available_providers())
+    providers = list(encode_execution_providers(onnxruntime.get_available_providers()))
+    # Virtual alias for CoreML on Apple Silicon — no PyTorch required for argparse to accept it.
+    if platform.system() == 'Darwin' and platform.machine() == 'arm64' and 'mps' not in providers:
+        providers.append('mps')
+    return providers
 
 
 def suggest_execution_threads() -> int:
@@ -145,7 +169,9 @@ def suggest_execution_threads() -> int:
     if 'CUDAExecutionProvider' in modules.globals.execution_providers:
         # For CUDA, use more threads for parallel frame processing
         return min(cpu_count, 16)
-    
+    if 'CoreMLExecutionProvider' in modules.globals.execution_providers:
+        return min(cpu_count, 16)
+
     # For CPU execution, use most cores but leave some for system
     return max(4, min(cpu_count - 2, 16))
 
@@ -170,8 +196,12 @@ def limit_resources() -> None:
 
 
 def release_resources() -> None:
-    if 'CUDAExecutionProvider' in modules.globals.execution_providers and HAS_TORCH:
+    if not HAS_TORCH:
+        return
+    if 'CUDAExecutionProvider' in modules.globals.execution_providers:
         torch.cuda.empty_cache()
+    if _torch_mps_available():
+        torch.mps.empty_cache()
 
 
 def pre_check() -> bool:

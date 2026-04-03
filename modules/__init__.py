@@ -1,4 +1,11 @@
-import os 
+import os
+import platform
+
+if platform.system() == "Darwin":
+    from .macos_avfoundation_stderr import install as _install_macos_stderr_filter
+
+    _install_macos_stderr_filter()
+
 import cv2
 import numpy as np
 

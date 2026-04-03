@@ -1,6 +1,7 @@
 # --- START OF FILE globals.py ---
 
 import os
+import threading
 from typing import List, Dict, Any
 
 ROOT_DIR = os.path.dirname(os.path.abspath(__file__))
@@ -40,6 +41,10 @@ live_mirror: bool = False
 live_resizable: bool = True
 camera_input_combobox: Any | None = None # Placeholder for UI element if needed
 webcam_preview_running: bool = False
+# Populated by live preview detection thread; read by process_frame_v2 to avoid duplicate detection.
+live_preview_face_cache_lock: threading.Lock = threading.Lock()
+live_preview_target_face: Any | None = None
+live_preview_many_faces: Any | None = None
 show_fps: bool = False
 
 # System Configuration

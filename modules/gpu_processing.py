@@ -3,9 +3,11 @@
 GPU-accelerated image processing using OpenCV CUDA (cv2.cuda.GpuMat).
 
 Provides drop-in replacements for common cv2 functions.  When OpenCV is built
-with CUDA support the functions transparently upload → process → download via
+with full CUDA support the functions transparently upload → process → download via
 GpuMat; otherwise they fall back to the regular CPU path so the rest of the
-codebase never has to care whether CUDA is available.
+codebase never has to care whether CUDA is available.  Partial or stub ``cv2.cuda``
+builds are treated as CPU-only with no console noise; set ``DLC_VERBOSE_GPU=1`` to
+log why CUDA was skipped.
 
 Usage
 -----
@@ -18,6 +20,7 @@ Usage
 
 from __future__ import annotations
 
+import os
 import cv2
 import numpy as np
 from typing import Tuple, Optional
@@ -27,27 +30,33 @@ from typing import Tuple, Optional
 # ---------------------------------------------------------------------------
 CUDA_AVAILABLE: bool = False
 
+_VERBOSE_GPU = os.environ.get("DLC_VERBOSE_GPU", "").lower() in ("1", "true", "yes")
+
 try:
-    # cv2.cuda.GpuMat is only present when OpenCV is compiled with CUDA
+    if not hasattr(cv2, "cuda"):
+        raise AttributeError("no cv2.cuda module")
+    # Some wheels expose GpuMat or stubs without full cv2.cuda image ops; require everything we call.
     _test_mat = cv2.cuda.GpuMat()
-    # Verify we have the required filter / image-processing functions
-    _has_gauss = hasattr(cv2.cuda, "createGaussianFilter")
-    _has_resize = hasattr(cv2.cuda, "resize")
-    _has_cvt = hasattr(cv2.cuda, "cvtColor")
-    if _has_gauss and _has_resize and _has_cvt:
+    del _test_mat
+    _required_cuda_names = (
+        "createGaussianFilter",
+        "resize",
+        "cvtColor",
+        "addWeighted",
+        "flip",
+    )
+    _missing = [n for n in _required_cuda_names if not hasattr(cv2.cuda, n)]
+    if not _missing:
         CUDA_AVAILABLE = True
         print("[gpu_processing] OpenCV CUDA support detected – GPU-accelerated processing enabled.")
-    else:
-        missing = []
-        if not _has_gauss:
-            missing.append("createGaussianFilter")
-        if not _has_resize:
-            missing.append("resize")
-        if not _has_cvt:
-            missing.append("cvtColor")
-        print(f"[gpu_processing] cv2.cuda.GpuMat exists but missing: {', '.join(missing)} – falling back to CPU.")
-except Exception:
-    print("[gpu_processing] OpenCV CUDA not available – using CPU fallback for all operations.")
+    elif _VERBOSE_GPU:
+        print(
+            "[gpu_processing] cv2.cuda is incomplete (missing "
+            f"{', '.join(_missing)}) – using CPU for image helpers."
+        )
+except Exception as e:
+    if _VERBOSE_GPU:
+        print(f"[gpu_processing] OpenCV CUDA not available ({e!r}) – using CPU for image helpers.")
 
 
 # ---------------------------------------------------------------------------

@@ -86,7 +86,10 @@ def get_face_swapper() -> Any:
     with THREAD_LOCK:
         if FACE_SWAPPER is None:
             model_name = "inswapper_128.onnx"
-            if "CUDAExecutionProvider" in modules.globals.execution_providers:
+            if (
+                "CUDAExecutionProvider" in modules.globals.execution_providers
+                or "CoreMLExecutionProvider" in modules.globals.execution_providers
+            ):
                 model_name = "inswapper_128_fp16.onnx"
             model_path = os.path.join(models_dir, model_name)
             update_status(f"Loading face swapper model from: {model_path}", NAME)
@@ -477,8 +480,18 @@ def process_frame_v2(temp_frame: Frame, temp_frame_path: str = "") -> Frame:
                                       source_target_pairs.append((source_face, target_face))
 
     else:
-        # Live stream or webcam processing (analyze faces on the fly)
-        detected_faces = get_many_faces(processed_frame)
+        # Live stream: reuse faces from preview detection thread when available (no duplicate detection).
+        detected_faces = None
+        if getattr(modules.globals, "webcam_preview_running", False):
+            with modules.globals.live_preview_face_cache_lock:
+                cached_many = modules.globals.live_preview_many_faces
+                cached_one = modules.globals.live_preview_target_face
+            if cached_many is not None:
+                detected_faces = cached_many
+            elif cached_one is not None:
+                detected_faces = [cached_one]
+        if detected_faces is None:
+            detected_faces = get_many_faces(processed_frame)
         if detected_faces:
             if modules.globals.many_faces:
                  source_face = default_source_face() # Use default source for all detected targets
@@ -512,7 +525,14 @@ def process_frame_v2(temp_frame: Frame, temp_frame_path: str = "") -> Frame:
                                      source_target_pairs.append((source_faces[i], detected_faces_with_embedding[closest_idx]))
             else: # Fallback: if no map, use default source for the single detected face (if any)
                 source_face = default_source_face()
-                target_face = get_one_face(processed_frame, detected_faces) # Use faces already detected
+                try:
+                    target_face = (
+                        min(detected_faces, key=lambda x: x.bbox[0])
+                        if detected_faces
+                        else None
+                    )
+                except (ValueError, TypeError, AttributeError):
+                    target_face = None
                 if source_face and target_face:
                     source_target_pairs.append((source_face, target_face))
 

@@ -72,8 +72,12 @@ ROOT_WIDTH = 600
 PREVIEW = None
 PREVIEW_MAX_HEIGHT = 700
 PREVIEW_MAX_WIDTH = 1200
-PREVIEW_DEFAULT_WIDTH = 960
-PREVIEW_DEFAULT_HEIGHT = 540
+# Lower resolution improves live swap throughput (ML cost scales with pixel count).
+PREVIEW_DEFAULT_WIDTH = 640
+PREVIEW_DEFAULT_HEIGHT = 360
+
+# Cap face-detection rate so the detector does not starve the swap thread (live preview).
+LIVE_DETECTION_MIN_INTERVAL_SEC = 1.0 / 20.0
 
 POPUP_WIDTH = 750
 POPUP_HEIGHT = 810
@@ -1094,12 +1098,8 @@ def _capture_thread_func(cap, capture_queue, stop_event):
 
 
 def _detection_thread_func(latest_frame_holder, detection_result, detection_lock, stop_event):
-    """Detection thread: continuously runs face detection on the latest
-    captured frame and stores results in detection_result under detection_lock.
-
-    This decouples face detection (~15-30ms) from face swapping (~5-10ms)
-    so the swap loop never blocks on detection, significantly improving
-    live mode FPS."""
+    """Detection thread: runs face detection on the latest captured frame at a
+    capped rate, stores results in detection_result and globals for map_faces live."""
     while not stop_event.is_set():
         with detection_lock:
             frame = latest_frame_holder[0]
@@ -1108,16 +1108,28 @@ def _detection_thread_func(latest_frame_holder, detection_result, detection_lock
             time.sleep(0.005)
             continue
 
+        t0 = time.monotonic()
         if modules.globals.many_faces:
             many = get_many_faces(frame)
             with detection_lock:
                 detection_result['target_face'] = None
                 detection_result['many_faces'] = many
+            with modules.globals.live_preview_face_cache_lock:
+                modules.globals.live_preview_target_face = None
+                modules.globals.live_preview_many_faces = many
         else:
             face = get_one_face(frame)
             with detection_lock:
                 detection_result['target_face'] = face
                 detection_result['many_faces'] = None
+            with modules.globals.live_preview_face_cache_lock:
+                modules.globals.live_preview_target_face = face
+                modules.globals.live_preview_many_faces = None
+
+        elapsed = time.monotonic() - t0
+        wait = LIVE_DETECTION_MIN_INTERVAL_SEC - elapsed
+        if wait > 0:
+            time.sleep(wait)
 
 
 def _processing_thread_func(capture_queue, processed_queue, stop_event,
@@ -1243,6 +1255,8 @@ def create_webcam_preview(camera_index: int):
         update_status("Failed to start camera")
         return
 
+    modules.globals.webcam_preview_running = True
+
     preview_label.configure(width=PREVIEW_DEFAULT_WIDTH, height=PREVIEW_DEFAULT_HEIGHT)
     PREVIEW.deiconify()
 
@@ -1293,6 +1307,10 @@ def create_webcam_preview(camera_index: int):
         det_thread.join(timeout=2.0)
         proc_thread.join(timeout=2.0)
         cap.release()
+        with modules.globals.live_preview_face_cache_lock:
+            modules.globals.live_preview_target_face = None
+            modules.globals.live_preview_many_faces = None
+        modules.globals.webcam_preview_running = False
         PREVIEW.withdraw()
 
     # Non-blocking display loop using ROOT.after() — avoids blocking the
